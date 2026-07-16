@@ -2,6 +2,7 @@ import { CONFIG, CATEGORIES, isConfigured } from "./config.js";
 import * as airtable from "./airtable.js";
 import { lookupBarcode } from "./lookup.js";
 import { scannerAvailable, startScan, stopScan } from "./scanner.js";
+import { unlockAudio, beep } from "./beep.js";
 
 // ---------- state ----------
 
@@ -294,6 +295,7 @@ async function saveItem(extra = {}) {
 const scanOverlay = $("#scanOverlay");
 
 async function openScanner() {
+  unlockAudio(); // user gesture — prime audio so the decode beep can play on iOS
   scanOverlay.showModal();
   $("#manualBarcode").value = "";
   $(".scan-hint").textContent = "Point the camera at the UPC/EAN barcode.";
@@ -316,6 +318,7 @@ async function closeScanner() {
 }
 
 async function onBarcode(code) {
+  beep();
   await closeScanner();
   form.elements.barcode.value = code;
   const status = $("#lookupStatus");
