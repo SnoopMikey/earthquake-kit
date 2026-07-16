@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Earthquake Kit</title>
+  <meta name="description" content="Track the contents and expiration dates of your earthquake emergency kit.">
+  <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Quake Kit">
+  <link rel="stylesheet" href="css/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="app-header-inner">
+      <h1>⛑️ Earthquake Kit</h1>
+      <button id="refreshBtn" class="icon-btn" title="Refresh" aria-label="Refresh">↻</button>
+    </div>
+  </header>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <main>
+    <section id="summary" class="summary" aria-label="Kit status summary"></section>
+
+    <div class="controls">
+      <input id="search" type="search" placeholder="Search items…" autocomplete="off">
+      <div id="categoryChips" class="chips" role="group" aria-label="Filter by category"></div>
+    </div>
+
+    <ul id="list" class="item-list"></ul>
+    <div id="empty" class="empty" hidden></div>
+  </main>
+
+  <button id="fab" class="fab">＋ Add item</button>
+
+  <!-- Add / Edit item -->
+  <dialog id="itemDialog" class="sheet">
+    <form id="itemForm" method="dialog">
+      <div class="sheet-header">
+        <h2 id="dialogTitle">Add item</h2>
+        <button type="button" class="icon-btn" id="closeDialog" aria-label="Close">✕</button>
+      </div>
+
+      <button type="button" id="scanBtn" class="scan-cta">📷 Scan barcode</button>
+
+      <div id="lookupStatus" class="lookup-status" hidden></div>
+      <div id="photoPreview" class="photo-preview" hidden></div>
+
+      <label>Name
+        <input name="name" required placeholder="e.g. Bottled water 24-pack" autocomplete="off">
+      </label>
+
+      <label>Category
+        <select name="category" id="categorySelect"></select>
+      </label>
+
+      <div class="row">
+        <label>Quantity
+          <input name="quantity" type="number" min="0" step="1" inputmode="numeric" placeholder="1">
+        </label>
+        <label>Expiration date
+          <input name="expiration" type="date">
+        </label>
+      </div>
+
+      <div class="quick-dates" aria-label="Quick expiration presets">
+        <span class="quick-label">Expires in:</span>
+        <button type="button" data-months="6">6 mo</button>
+        <button type="button" data-months="12">1 yr</button>
+        <button type="button" data-months="24">2 yr</button>
+        <button type="button" data-months="60">5 yr</button>
+        <button type="button" data-months="0" class="clear">none</button>
+      </div>
+
+      <label>Notes
+        <textarea name="notes" rows="2" placeholder="Location in kit, brand, etc."></textarea>
+      </label>
+
+      <input type="hidden" name="barcode">
+      <input type="hidden" name="photoUrl">
+      <input type="hidden" name="id">
+
+      <div id="metaLine" class="meta-line"></div>
+
+      <div class="sheet-actions">
+        <button type="button" id="deleteBtn" class="danger" hidden>Delete</button>
+        <button type="button" id="replacedBtn" class="secondary" hidden>Replaced today</button>
+        <button type="submit" id="saveBtn" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Barcode scanner (a dialog so it stacks above the item dialog's top layer) -->
+  <dialog id="scanOverlay" class="scan-dialog">
+    <div class="scan-box">
+      <div class="sheet-header">
+        <h2>Scan barcode</h2>
+        <button type="button" class="icon-btn" id="closeScan" aria-label="Close scanner">✕</button>
+      </div>
+      <div id="reader"></div>
+      <p class="scan-hint">Point the camera at the UPC/EAN barcode.</p>
+      <form id="manualBarcodeForm" class="manual-barcode">
+        <input id="manualBarcode" inputmode="numeric" placeholder="…or type the number" autocomplete="off">
+        <button type="submit">Look up</button>
+      </form>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

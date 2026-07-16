@@ -1,0 +1,442 @@
+import { CONFIG, CATEGORIES, isConfigured } from "./config.js";
+import * as airtable from "./airtable.js";
+import { lookupBarcode } from "./lookup.js";
+import { scannerAvailable, startScan, stopScan } from "./scanner.js";
+
+// ---------- state ----------
+
+const state = {
+  items: [],
+  statusFilter: null,   // 'expired' | 'soon' | 'ok' | 'none' | null
+  categoryFilter: null, // category name | null
+  query: "",
+  loading: false,
+};
+
+const demo = !isConfigured();
+
+// In-memory store used until Airtable is wired up, so the UI is fully usable.
+const demoStore = {
+  seq: 0,
+  items: [
+    { name: "Bottled water 24-pack", category: "Water", quantity: 2, expiration: offsetDate(-20), notes: "Rotate every 6 months" },
+    { name: "Clif Bars variety box", category: "Food", quantity: 12, expiration: offsetDate(45) },
+    { name: "Adhesive bandages", category: "First Aid", quantity: 1, expiration: offsetDate(400) },
+    { name: "Ibuprofen 200mg", category: "Medication", quantity: 1, expiration: offsetDate(75) },
+    { name: "LED flashlight", category: "Light & Power", quantity: 2, expiration: null },
+    { name: "AA batteries 12-pack", category: "Light & Power", quantity: 1, expiration: offsetDate(900) },
+    { name: "Hand-crank radio", category: "Communication", quantity: 1, expiration: null },
+  ].map((it, i) => ({ id: `demo${i}`, barcode: "", notes: "", lastReplaced: null, photoUrl: null, ...it })),
+};
+demoStore.seq = demoStore.items.length;
+
+function offsetDate(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// ---------- data layer (demo vs airtable) ----------
+
+const store = demo
+  ? {
+      list: async () => [...demoStore.items],
+      create: async (item) => {
+        const rec = { ...item, id: `demo${demoStore.seq++}`, photoUrl: item.newPhotoUrl || null };
+        demoStore.items.push(rec);
+        return rec;
+      },
+      update: async (id, item) => {
+        const i = demoStore.items.findIndex((x) => x.id === id);
+        const prev = demoStore.items[i];
+        demoStore.items[i] = { ...prev, ...item, id, photoUrl: item.newPhotoUrl || prev.photoUrl };
+        return demoStore.items[i];
+      },
+      remove: async (id) => {
+        demoStore.items = demoStore.items.filter((x) => x.id !== id);
+      },
+    }
+  : {
+      list: airtable.listItems,
+      create: airtable.createItem,
+      update: airtable.updateItem,
+      remove: airtable.deleteItem,
+    };
+
+// ---------- status helpers ----------
+
+function daysUntil(dateStr) {
+  if (!dateStr) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const d = new Date(`${dateStr}T00:00:00`);
+  return Math.round((d - today) / 86400000);
+}
+
+function statusOf(item) {
+  const days = daysUntil(item.expiration);
+  if (days === null) return "none";
+  if (days < 0) return "expired";
+  if (days <= CONFIG.soonDays) return "soon";
+  return "ok";
+}
+
+function statusLabel(item) {
+  const days = daysUntil(item.expiration);
+  if (days === null) return "No expiry";
+  if (days < -1) return `Expired ${-days}d ago`;
+  if (days === -1) return "Expired yesterday";
+  if (days === 0) return "Expires today";
+  if (days === 1) return "Expires tomorrow";
+  if (days <= 60) return `Expires in ${days}d`;
+  return `Expires ${item.expiration}`;
+}
+
+const STATUS_ORDER = { expired: 0, soon: 1, ok: 2, none: 3 };
+
+function sortItems(items) {
+  return [...items].sort((a, b) => {
+    const s = STATUS_ORDER[statusOf(a)] - STATUS_ORDER[statusOf(b)];
+    if (s !== 0) return s;
+    const da = daysUntil(a.expiration);
+    const db = daysUntil(b.expiration);
+    if (da !== null && db !== null && da !== db) return da - db;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function categoryEmoji(name) {
+  return CATEGORIES.find((c) => c.name === name)?.emoji || "📦";
+}
+
+// ---------- DOM helpers ----------
+
+const $ = (sel) => document.querySelector(sel);
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+let toastTimer;
+function toast(msg) {
+  const el = $("#toast");
+  el.textContent = msg;
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, 2600);
+}
+
+// ---------- rendering ----------
+
+function render() {
+  renderSummary();
+  renderChips();
+  renderList();
+}
+
+function renderSummary() {
+  const counts = { expired: 0, soon: 0, ok: 0, none: 0 };
+  for (const it of state.items) counts[statusOf(it)]++;
+  const defs = [
+    ["expired", "Expired"],
+    ["soon", `≤ ${CONFIG.soonDays} days`],
+    ["ok", "OK"],
+    ["none", "No expiry"],
+  ];
+  $("#summary").innerHTML = defs
+    .map(([key, label]) =>
+      `<button class="stat ${key} ${state.statusFilter === key ? "active" : ""}" data-status="${key}">
+        <span class="num">${counts[key]}</span><span class="lbl">${esc(label)}</span>
+      </button>`)
+    .join("");
+}
+
+function renderChips() {
+  const inUse = new Set(state.items.map((it) => it.category));
+  const cats = CATEGORIES.filter((c) => inUse.has(c.name));
+  $("#categoryChips").innerHTML = cats
+    .map((c) =>
+      `<button class="chip ${state.categoryFilter === c.name ? "active" : ""}" data-category="${esc(c.name)}">
+        ${c.emoji} ${esc(c.name)}
+      </button>`)
+    .join("");
+}
+
+function visibleItems() {
+  const q = state.query.trim().toLowerCase();
+  return sortItems(state.items.filter((it) => {
+    if (state.statusFilter && statusOf(it) !== state.statusFilter) return false;
+    if (state.categoryFilter && it.category !== state.categoryFilter) return false;
+    if (q && !`${it.name} ${it.notes} ${it.barcode}`.toLowerCase().includes(q)) return false;
+    return true;
+  }));
+}
+
+function renderList() {
+  const items = visibleItems();
+  const list = $("#list");
+  const empty = $("#empty");
+
+  list.innerHTML = items
+    .map((it) => {
+      const st = statusOf(it);
+      const qty = it.quantity ? `×${it.quantity} · ` : "";
+      const thumb = it.photoUrl
+        ? `<img src="${esc(it.photoUrl)}" alt="" loading="lazy">`
+        : categoryEmoji(it.category);
+      return `<li class="item-card" data-id="${esc(it.id)}">
+        <div class="item-thumb">${thumb}</div>
+        <div class="item-body">
+          <div class="item-name">${esc(it.name)}</div>
+          <div class="item-sub">${qty}${esc(it.category)}</div>
+        </div>
+        <span class="badge ${st}">${esc(statusLabel(it))}</span>
+      </li>`;
+    })
+    .join("");
+
+  empty.hidden = items.length > 0;
+  if (items.length === 0) {
+    empty.textContent = state.items.length === 0
+      ? "Your kit is empty. Tap “＋ Add item” to start logging."
+      : "No items match the current filters.";
+  }
+}
+
+// ---------- data loading ----------
+
+async function load() {
+  state.loading = true;
+  try {
+    state.items = await store.list();
+    render();
+  } catch (err) {
+    toast(`Couldn’t load items — ${err.message}`);
+  } finally {
+    state.loading = false;
+  }
+}
+
+// ---------- add / edit dialog ----------
+
+const dialog = $("#itemDialog");
+const form = $("#itemForm");
+
+function openDialog(item = null) {
+  form.reset();
+  $("#dialogTitle").textContent = item ? "Edit item" : "Add item";
+  $("#deleteBtn").hidden = !item;
+  $("#replacedBtn").hidden = !item;
+  $("#lookupStatus").hidden = true;
+  setPhotoPreview(item?.photoUrl || null);
+  form.elements.id.value = item?.id || "";
+  form.elements.name.value = item?.name || "";
+  form.elements.category.value = item?.category || "Other";
+  form.elements.quantity.value = item?.quantity ?? "";
+  form.elements.expiration.value = item?.expiration || "";
+  form.elements.notes.value = item?.notes || "";
+  form.elements.barcode.value = item?.barcode || "";
+  form.elements.photoUrl.value = "";
+
+  const meta = [];
+  if (item?.barcode) meta.push(`Barcode ${item.barcode}`);
+  if (item?.lastReplaced) meta.push(`Last replaced ${item.lastReplaced}`);
+  $("#metaLine").textContent = meta.join(" · ");
+
+  dialog.showModal();
+}
+
+function setPhotoPreview(url) {
+  const box = $("#photoPreview");
+  box.hidden = !url;
+  box.innerHTML = url ? `<img src="${esc(url)}" alt="Product photo">` : "";
+}
+
+function readForm() {
+  return {
+    name: form.elements.name.value.trim(),
+    category: form.elements.category.value,
+    quantity: form.elements.quantity.value === "" ? null : Number(form.elements.quantity.value),
+    expiration: form.elements.expiration.value || null,
+    notes: form.elements.notes.value.trim(),
+    barcode: form.elements.barcode.value.trim(),
+    newPhotoUrl: form.elements.photoUrl.value || null,
+  };
+}
+
+async function saveItem(extra = {}) {
+  const id = form.elements.id.value;
+  const item = { ...readForm(), ...extra };
+  if (!item.name) return;
+  const existing = id ? state.items.find((x) => x.id === id) : null;
+  if (existing) item.lastReplaced = extra.lastReplaced ?? existing.lastReplaced;
+  try {
+    if (id) {
+      const updated = await store.update(id, item);
+      state.items = state.items.map((x) => (x.id === id ? updated : x));
+      toast("Saved");
+    } else {
+      const created = await store.create(item);
+      state.items.push(created);
+      toast(`Added ${created.name}`);
+    }
+    dialog.close();
+    render();
+  } catch (err) {
+    toast(`Save failed — ${err.message}`);
+  }
+}
+
+// ---------- scanning ----------
+
+const scanOverlay = $("#scanOverlay");
+
+async function openScanner() {
+  scanOverlay.showModal();
+  $("#manualBarcode").value = "";
+  $(".scan-hint").textContent = "Point the camera at the UPC/EAN barcode.";
+  if (!scannerAvailable()) {
+    $(".scan-hint").textContent =
+      "Camera scanning isn’t available here — type the barcode number instead.";
+    return;
+  }
+  try {
+    await startScan("reader", onBarcode);
+  } catch {
+    $(".scan-hint").textContent =
+      "Couldn’t start the camera (permission denied?). Type the barcode number instead.";
+  }
+}
+
+async function closeScanner() {
+  await stopScan();
+  if (scanOverlay.open) scanOverlay.close();
+}
+
+async function onBarcode(code) {
+  await closeScanner();
+  form.elements.barcode.value = code;
+  const status = $("#lookupStatus");
+  status.hidden = false;
+  status.className = "lookup-status";
+  status.textContent = `Looking up ${code}…`;
+
+  const hit = await lookupBarcode(code);
+  if (hit) {
+    if (!form.elements.name.value.trim()) form.elements.name.value = hit.name;
+    form.elements.category.value = hit.category;
+    if (hit.photoUrl) {
+      form.elements.photoUrl.value = hit.photoUrl;
+      setPhotoPreview(hit.photoUrl);
+    }
+    status.className = "lookup-status ok";
+    status.textContent = `✓ Found via ${hit.source} — set the expiration date from the package.`;
+  } else {
+    status.className = "lookup-status warn";
+    status.textContent = `Barcode ${code} saved, but no product match — enter the details manually.`;
+  }
+}
+
+// ---------- events ----------
+
+function bindEvents() {
+  $("#summary").addEventListener("click", (e) => {
+    const btn = e.target.closest(".stat");
+    if (!btn) return;
+    state.statusFilter = state.statusFilter === btn.dataset.status ? null : btn.dataset.status;
+    render();
+  });
+
+  $("#categoryChips").addEventListener("click", (e) => {
+    const chip = e.target.closest(".chip");
+    if (!chip) return;
+    state.categoryFilter = state.categoryFilter === chip.dataset.category ? null : chip.dataset.category;
+    render();
+  });
+
+  $("#search").addEventListener("input", (e) => {
+    state.query = e.target.value;
+    renderList();
+  });
+
+  $("#list").addEventListener("click", (e) => {
+    const card = e.target.closest(".item-card");
+    if (!card) return;
+    const item = state.items.find((x) => x.id === card.dataset.id);
+    if (item) openDialog(item);
+  });
+
+  $("#fab").addEventListener("click", () => openDialog());
+  $("#refreshBtn").addEventListener("click", () => { load(); toast("Refreshing…"); });
+  $("#closeDialog").addEventListener("click", () => dialog.close());
+
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    saveItem();
+  });
+
+  $("#deleteBtn").addEventListener("click", async () => {
+    const id = form.elements.id.value;
+    if (!id) return;
+    const item = state.items.find((x) => x.id === id);
+    if (!confirm(`Delete “${item?.name}” from the kit?`)) return;
+    try {
+      await store.remove(id);
+      state.items = state.items.filter((x) => x.id !== id);
+      dialog.close();
+      render();
+      toast("Deleted");
+    } catch (err) {
+      toast(`Delete failed — ${err.message}`);
+    }
+  });
+
+  $("#replacedBtn").addEventListener("click", () => {
+    // Mark as replaced today; the user updates the expiration date in the same form.
+    saveItem({ lastReplaced: offsetDate(0) });
+  });
+
+  document.querySelector(".quick-dates").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-months]");
+    if (!btn) return;
+    const months = Number(btn.dataset.months);
+    if (months === 0) {
+      form.elements.expiration.value = "";
+      return;
+    }
+    const d = new Date();
+    d.setMonth(d.getMonth() + months);
+    form.elements.expiration.value = d.toISOString().slice(0, 10);
+  });
+
+  $("#scanBtn").addEventListener("click", openScanner);
+  $("#closeScan").addEventListener("click", closeScanner);
+  scanOverlay.addEventListener("cancel", () => stopScan()); // Esc key
+  scanOverlay.addEventListener("close", () => stopScan());
+  $("#manualBarcodeForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const code = $("#manualBarcode").value.trim();
+    if (code) onBarcode(code);
+  });
+}
+
+// ---------- init ----------
+
+function init() {
+  $("#categorySelect").innerHTML = CATEGORIES
+    .map((c) => `<option value="${esc(c.name)}">${c.emoji} ${esc(c.name)}</option>`)
+    .join("");
+
+  if (demo) {
+    const banner = $("#banner");
+    banner.hidden = false;
+    banner.textContent = "Demo mode — Airtable isn’t connected yet, so changes won’t be saved.";
+  }
+
+  bindEvents();
+  load();
+}
+
+init();
