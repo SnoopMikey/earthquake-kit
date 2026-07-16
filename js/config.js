@@ -1,8 +1,9 @@
 // Runtime configuration.
-// The token below is a limited Airtable personal access token with
-// data.records:read + data.records:write scoped to ONLY this base.
+// The Airtable token (records read/write on this base only) is NOT stored
+// in the repo: the deploy workflow injects it from the AIRTABLE_TOKEN
+// Actions secret. Locally, the placeholder keeps the app in demo mode.
 export const CONFIG = {
-  airtableToken: "",   // pat… (runtime token — filled in during setup)
+  airtableToken: "__AIRTABLE_TOKEN__",
   baseId: "appd8hZ3F0sOhoxo7",
   tableName: "Items",
   // Items expiring within this many days count as "Expiring soon".

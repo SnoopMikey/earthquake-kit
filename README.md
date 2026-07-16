@@ -11,8 +11,11 @@ expired or expiring within 90 days.
   from Open Food Facts, falling back to UPCitemdb
 - **Alerts:** Airtable scheduled automation → monthly email digest
 
-> Note: the runtime Airtable token ships in the public page source by design.
-> It is scoped to read/write records on this single base only.
+> Note: the runtime Airtable token is served in the public page source by
+> design — it is scoped to read/write records on this single base only. It is
+> never committed to the repo (GitHub would report it to Airtable, which
+> auto-revokes leaked tokens); the deploy workflow injects it from the
+> `AIRTABLE_TOKEN` Actions secret.
 
 ## Setup
 
@@ -31,8 +34,9 @@ The response contains the new base id (`app...`).
 ### 2. Create the runtime token
 
 Make a second token with only `data.records:read` + `data.records:write`,
-granted access to **only** the Earthquake Kit base. Put it and the base id
-into `js/config.js`. Revoke the setup token.
+granted access to **only** the Earthquake Kit base. Store it as an Actions
+secret (`gh secret set AIRTABLE_TOKEN`) and put the base id into
+`js/config.js`. Revoke the setup token.
 
 ### 3. Email automation (manual, in Airtable's UI)
 
@@ -50,8 +54,10 @@ automation**:
 
 ### 4. Deploy
 
-Push to a GitHub repo and enable GitHub Pages (deploy from branch, root).
-The app must be served over HTTPS for camera access — GitHub Pages is.
+Pushing to `main` triggers `.github/workflows/deploy.yml`, which substitutes
+the `AIRTABLE_TOKEN` secret into `js/config.js` and publishes to GitHub Pages
+(the repo's Pages build type must be "GitHub Actions"). The app must be
+served over HTTPS for camera access — GitHub Pages is.
 
 ## Local development
 
