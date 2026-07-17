@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Earthquake Kit</title>
-  <meta name="description" content="Track the contents and expiration dates of your earthquake emergency kit.">
+  <title>DuxPrep</title>
+  <meta name="description" content="DuxPrep — track your earthquake emergency kit, expiration dates, and evacuation checklist.">
   <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)">
   <link rel="manifest" href="manifest.webmanifest">
@@ -12,14 +12,14 @@
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="Quake Kit">
+  <meta name="apple-mobile-web-app-title" content="DuxPrep">
   <link rel="stylesheet" href="css/style.css">
   <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
 </head>
 <body>
   <header class="app-header">
     <div class="app-header-inner">
-      <h1>⛑️ Earthquake Kit</h1>
+      <h1>🦆 DuxPrep</h1>
       <button id="refreshBtn" class="icon-btn" title="Refresh" aria-label="Refresh">↻</button>
     </div>
   </header>
@@ -27,18 +27,43 @@
   <div id="banner" class="banner" hidden></div>
 
   <main>
-    <section id="summary" class="summary" aria-label="Kit status summary"></section>
+    <!-- ============ Kit tab ============ -->
+    <section id="kitView">
+      <section id="summary" class="summary" aria-label="Kit status summary"></section>
 
-    <div class="controls">
-      <input id="search" type="search" placeholder="Search items…" autocomplete="off">
-      <div id="categoryChips" class="chips" role="group" aria-label="Filter by category"></div>
-    </div>
+      <div class="controls">
+        <input id="search" type="search" placeholder="Search items…" autocomplete="off">
+        <div id="categoryChips" class="chips" role="group" aria-label="Filter by category"></div>
+      </div>
 
-    <ul id="list" class="item-list"></ul>
-    <div id="empty" class="empty" hidden></div>
+      <ul id="list" class="item-list"></ul>
+      <div id="empty" class="empty" hidden></div>
+    </section>
+
+    <!-- ============ Evacuation tab ============ -->
+    <section id="evacView" hidden>
+      <div class="evac-head">
+        <div id="evacProgress" class="evac-progress"></div>
+        <button id="evacReset" class="linkish" hidden>Uncheck all</button>
+      </div>
+      <div class="evac-bar"><div id="evacBarFill" class="evac-bar-fill"></div></div>
+
+      <form id="evacAddForm" class="evac-add">
+        <input id="evacAddInput" placeholder="Add something to grab… (e.g. passports)" autocomplete="off">
+        <button type="submit">Add</button>
+      </form>
+
+      <ul id="evacList" class="evac-list"></ul>
+      <div id="evacEmpty" class="empty" hidden></div>
+    </section>
   </main>
 
   <button id="fab" class="fab">＋ Add item</button>
+
+  <nav class="tabbar">
+    <button class="tab active" data-tab="kit">⛑️<span>Kit</span></button>
+    <button class="tab" data-tab="evac">🎒<span>Evacuation</span></button>
+  </nav>
 
   <!-- Add / Edit item -->
   <dialog id="itemDialog" class="sheet">
@@ -48,7 +73,11 @@
         <button type="button" class="icon-btn" id="closeDialog" aria-label="Close">✕</button>
       </div>
 
-      <button type="button" id="scanBtn" class="scan-cta">📷 Scan barcode</button>
+      <div class="capture-row">
+        <button type="button" id="scanBtn" class="scan-cta">📷 Scan barcode</button>
+        <button type="button" id="photoBtn" class="scan-cta">📸 Take photo</button>
+      </div>
+      <input type="file" id="photoInput" accept="image/*" capture="environment" hidden>
 
       <div id="lookupStatus" class="lookup-status" hidden></div>
       <div id="photoPreview" class="photo-preview" hidden></div>
@@ -110,6 +139,7 @@
         <input id="manualBarcode" inputmode="numeric" placeholder="…or type the number" autocomplete="off">
         <button type="submit">Look up</button>
       </form>
+      <button type="button" id="scanToPhoto" class="linkish center">📸 No barcode? Take a photo instead</button>
     </div>
   </dialog>
 

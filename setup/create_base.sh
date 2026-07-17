@@ -32,6 +32,7 @@ curl -sS -X POST "https://api.airtable.com/v0/meta/bases" \
           { "name": "Medication", "color": "pinkBright" },
           { "name": "Light & Power", "color": "yellowBright" },
           { "name": "Tools", "color": "grayBright" },
+          { "name": "Kitchen", "color": "orangeLight2" },
           { "name": "Communication", "color": "purpleBright" },
           { "name": "Hygiene", "color": "tealBright" },
           { "name": "Documents & Cash", "color": "greenBright" },
@@ -44,6 +45,15 @@ curl -sS -X POST "https://api.airtable.com/v0/meta/bases" \
         { "name": "Photo", "type": "multipleAttachments" },
         { "name": "Notes", "type": "multilineText" },
         { "name": "Last Replaced", "type": "date", "options": { "dateFormat": { "name": "iso" } } }
+      ]
+    },
+    {
+      "name": "Evacuation",
+      "description": "Grab-and-go checklist for evacuation — things not stored in the kit",
+      "fields": [
+        { "name": "Item", "type": "singleLineText" },
+        { "name": "Notes", "type": "multilineText" },
+        { "name": "Packed", "type": "checkbox", "options": { "icon": "check", "color": "greenBright" } }
       ]
     }
   ]

@@ -3,16 +3,20 @@ import * as airtable from "./airtable.js";
 import { lookupBarcode } from "./lookup.js";
 import { scannerAvailable, startScan, stopScan } from "./scanner.js";
 import { unlockAudio, beep } from "./beep.js";
+import { pickPhoto, fileToJpeg } from "./photo.js";
 
 // ---------- state ----------
 
 const state = {
+  tab: "kit",           // 'kit' | 'evac'
   items: [],
+  evacItems: [],
   statusFilter: null,   // 'expired' | 'soon' | 'ok' | 'none' | null
   categoryFilter: null, // category name | null
   query: "",
-  loading: false,
 };
+
+let pendingPhoto = null; // {dataUrl, base64, contentType} captured but not yet saved
 
 const demo = !isConfigured();
 
@@ -24,10 +28,19 @@ const demoStore = {
     { name: "Clif Bars variety box", category: "Food", quantity: 12, expiration: offsetDate(45) },
     { name: "Adhesive bandages", category: "First Aid", quantity: 1, expiration: offsetDate(400) },
     { name: "Ibuprofen 200mg", category: "Medication", quantity: 1, expiration: offsetDate(75) },
+    { name: "Manual can opener", category: "Kitchen", quantity: 1, expiration: null },
     { name: "LED flashlight", category: "Light & Power", quantity: 2, expiration: null },
     { name: "AA batteries 12-pack", category: "Light & Power", quantity: 1, expiration: offsetDate(900) },
     { name: "Hand-crank radio", category: "Communication", quantity: 1, expiration: null },
   ].map((it, i) => ({ id: `demo${i}`, barcode: "", notes: "", lastReplaced: null, photoUrl: null, ...it })),
+  evac: [
+    "Passports & documents binder",
+    "Wallet & keys",
+    "Phone chargers",
+    "Prescription meds",
+    "Laptop",
+  ].map((name, i) => ({ id: `evac${i}`, name, notes: "", packed: i < 2, createdTime: String(i) })),
+  evacSeq: 5,
 };
 demoStore.seq = demoStore.items.length;
 
@@ -56,12 +69,36 @@ const store = demo
       remove: async (id) => {
         demoStore.items = demoStore.items.filter((x) => x.id !== id);
       },
+      attachPhoto: async () => {},
+      evacList: async () => [...demoStore.evac],
+      evacCreate: async (name) => {
+        const rec = { id: `evac${demoStore.evacSeq++}`, name, notes: "", packed: false, createdTime: String(Date.now()) };
+        demoStore.evac.push(rec);
+        return rec;
+      },
+      evacUpdate: async (id, fields) => {
+        const rec = demoStore.evac.find((x) => x.id === id);
+        Object.assign(rec, fields);
+        return rec;
+      },
+      evacRemove: async (id) => {
+        demoStore.evac = demoStore.evac.filter((x) => x.id !== id);
+      },
+      evacReset: async () => {
+        demoStore.evac.forEach((x) => { x.packed = false; });
+      },
     }
   : {
       list: airtable.listItems,
       create: airtable.createItem,
       update: airtable.updateItem,
       remove: airtable.deleteItem,
+      attachPhoto: airtable.uploadItemPhoto,
+      evacList: airtable.listEvac,
+      evacCreate: airtable.createEvac,
+      evacUpdate: airtable.updateEvac,
+      evacRemove: airtable.deleteEvac,
+      evacReset: airtable.resetEvac,
     };
 
 // ---------- status helpers ----------
@@ -129,12 +166,25 @@ function toast(msg) {
   toastTimer = setTimeout(() => { el.hidden = true; }, 2600);
 }
 
-// ---------- rendering ----------
+// ---------- tabs ----------
+
+function switchTab(tab) {
+  state.tab = tab;
+  $("#kitView").hidden = tab !== "kit";
+  $("#evacView").hidden = tab !== "evac";
+  $("#fab").hidden = tab !== "kit";
+  document.querySelectorAll(".tabbar .tab").forEach((b) => {
+    b.classList.toggle("active", b.dataset.tab === tab);
+  });
+}
+
+// ---------- rendering: kit ----------
 
 function render() {
   renderSummary();
   renderChips();
   renderList();
+  renderEvac();
 }
 
 function renderSummary() {
@@ -206,17 +256,47 @@ function renderList() {
   }
 }
 
+// ---------- rendering: evacuation ----------
+
+function renderEvac() {
+  const items = state.evacItems;
+  const packed = items.filter((x) => x.packed).length;
+
+  $("#evacProgress").textContent = items.length
+    ? `${packed} of ${items.length} packed`
+    : "Grab-and-go checklist";
+  $("#evacBarFill").style.width = items.length ? `${(packed / items.length) * 100}%` : "0";
+  $("#evacReset").hidden = packed === 0;
+
+  $("#evacList").innerHTML = items
+    .map((it) =>
+      `<li class="evac-item ${it.packed ? "packed" : ""}" data-id="${esc(it.id)}">
+        <label>
+          <input type="checkbox" ${it.packed ? "checked" : ""}>
+          <span class="evac-name">${esc(it.name)}</span>
+        </label>
+        <button class="evac-del" aria-label="Remove ${esc(it.name)}">✕</button>
+      </li>`)
+    .join("");
+
+  const empty = $("#evacEmpty");
+  empty.hidden = items.length > 0;
+  if (items.length === 0) {
+    empty.textContent =
+      "Nothing here yet — list the things to grab in an evacuation that aren’t stored in the kit (documents, meds, chargers, pets…).";
+  }
+}
+
 // ---------- data loading ----------
 
 async function load() {
-  state.loading = true;
   try {
-    state.items = await store.list();
+    const [items, evacItems] = await Promise.all([store.list(), store.evacList()]);
+    state.items = items;
+    state.evacItems = evacItems;
     render();
   } catch (err) {
-    toast(`Couldn’t load items — ${err.message}`);
-  } finally {
-    state.loading = false;
+    toast(`Couldn’t load — ${err.message}`);
   }
 }
 
@@ -227,6 +307,7 @@ const form = $("#itemForm");
 
 function openDialog(item = null) {
   form.reset();
+  pendingPhoto = null;
   $("#dialogTitle").textContent = item ? "Edit item" : "Add item";
   $("#deleteBtn").hidden = !item;
   $("#replacedBtn").hidden = !item;
@@ -263,7 +344,8 @@ function readForm() {
     expiration: form.elements.expiration.value || null,
     notes: form.elements.notes.value.trim(),
     barcode: form.elements.barcode.value.trim(),
-    newPhotoUrl: form.elements.photoUrl.value || null,
+    // A captured photo wins over a product-lookup image URL.
+    newPhotoUrl: pendingPhoto ? null : (form.elements.photoUrl.value || null),
   };
 }
 
@@ -274,19 +356,42 @@ async function saveItem(extra = {}) {
   const existing = id ? state.items.find((x) => x.id === id) : null;
   if (existing) item.lastReplaced = extra.lastReplaced ?? existing.lastReplaced;
   try {
+    let saved;
     if (id) {
-      const updated = await store.update(id, item);
-      state.items = state.items.map((x) => (x.id === id ? updated : x));
-      toast("Saved");
+      saved = await store.update(id, item);
+      state.items = state.items.map((x) => (x.id === id ? saved : x));
     } else {
-      const created = await store.create(item);
-      state.items.push(created);
-      toast(`Added ${created.name}`);
+      saved = await store.create(item);
+      state.items.push(saved);
     }
+    if (pendingPhoto) {
+      try {
+        await store.attachPhoto(saved.id, pendingPhoto);
+        saved.photoUrl = pendingPhoto.dataUrl;
+      } catch {
+        toast("Saved, but the photo upload failed");
+      }
+      pendingPhoto = null;
+    }
+    toast(id ? "Saved" : `Added ${saved.name}`);
     dialog.close();
     render();
   } catch (err) {
     toast(`Save failed — ${err.message}`);
+  }
+}
+
+// ---------- photo capture ----------
+
+async function takePhoto() {
+  const file = await pickPhoto($("#photoInput"));
+  if (!file) return;
+  try {
+    pendingPhoto = await fileToJpeg(file);
+    form.elements.photoUrl.value = "";
+    setPhotoPreview(pendingPhoto.dataUrl);
+  } catch {
+    toast("Couldn’t process that photo");
   }
 }
 
@@ -330,7 +435,7 @@ async function onBarcode(code) {
   if (hit) {
     if (!form.elements.name.value.trim()) form.elements.name.value = hit.name;
     form.elements.category.value = hit.category;
-    if (hit.photoUrl) {
+    if (hit.photoUrl && !pendingPhoto) {
       form.elements.photoUrl.value = hit.photoUrl;
       setPhotoPreview(hit.photoUrl);
     }
@@ -338,13 +443,18 @@ async function onBarcode(code) {
     status.textContent = `✓ Found via ${hit.source} — set the expiration date from the package.`;
   } else {
     status.className = "lookup-status warn";
-    status.textContent = `Barcode ${code} saved, but no product match — enter the details manually.`;
+    status.textContent = `Barcode ${code} saved, but no product match — enter the details or 📸 take a photo.`;
   }
 }
 
 // ---------- events ----------
 
 function bindEvents() {
+  document.querySelector(".tabbar").addEventListener("click", (e) => {
+    const btn = e.target.closest(".tab");
+    if (btn) switchTab(btn.dataset.tab);
+  });
+
   $("#summary").addEventListener("click", (e) => {
     const btn = e.target.closest(".stat");
     if (!btn) return;
@@ -415,13 +525,78 @@ function bindEvents() {
   });
 
   $("#scanBtn").addEventListener("click", openScanner);
+  $("#photoBtn").addEventListener("click", takePhoto);
   $("#closeScan").addEventListener("click", closeScanner);
+  $("#scanToPhoto").addEventListener("click", async () => {
+    await closeScanner();
+    takePhoto();
+  });
   scanOverlay.addEventListener("cancel", () => stopScan()); // Esc key
   scanOverlay.addEventListener("close", () => stopScan());
   $("#manualBarcodeForm").addEventListener("submit", (e) => {
     e.preventDefault();
     const code = $("#manualBarcode").value.trim();
     if (code) onBarcode(code);
+  });
+
+  // ----- evacuation checklist -----
+
+  $("#evacAddForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const input = $("#evacAddInput");
+    const name = input.value.trim();
+    if (!name) return;
+    try {
+      const rec = await store.evacCreate(name);
+      state.evacItems.push(rec);
+      input.value = "";
+      renderEvac();
+    } catch (err) {
+      toast(`Couldn’t add — ${err.message}`);
+    }
+  });
+
+  $("#evacList").addEventListener("change", async (e) => {
+    const li = e.target.closest(".evac-item");
+    if (!li || e.target.type !== "checkbox") return;
+    const rec = state.evacItems.find((x) => x.id === li.dataset.id);
+    const packed = e.target.checked;
+    rec.packed = packed; // optimistic
+    renderEvac();
+    try {
+      await store.evacUpdate(rec.id, { name: rec.name, packed });
+    } catch (err) {
+      rec.packed = !packed;
+      renderEvac();
+      toast(`Couldn’t update — ${err.message}`);
+    }
+  });
+
+  $("#evacList").addEventListener("click", async (e) => {
+    const del = e.target.closest(".evac-del");
+    if (!del) return;
+    const li = del.closest(".evac-item");
+    const rec = state.evacItems.find((x) => x.id === li.dataset.id);
+    if (!confirm(`Remove “${rec?.name}” from the evacuation list?`)) return;
+    try {
+      await store.evacRemove(rec.id);
+      state.evacItems = state.evacItems.filter((x) => x.id !== rec.id);
+      renderEvac();
+    } catch (err) {
+      toast(`Couldn’t remove — ${err.message}`);
+    }
+  });
+
+  $("#evacReset").addEventListener("click", async () => {
+    if (!confirm("Uncheck everything on the evacuation list?")) return;
+    const packedIds = state.evacItems.filter((x) => x.packed).map((x) => x.id);
+    try {
+      await store.evacReset(packedIds);
+      state.evacItems.forEach((x) => { x.packed = false; });
+      renderEvac();
+    } catch (err) {
+      toast(`Couldn’t reset — ${err.message}`);
+    }
   });
 }
 

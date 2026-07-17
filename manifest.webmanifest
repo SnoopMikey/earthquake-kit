@@ -1,7 +1,7 @@
 {
-  "name": "Earthquake Kit",
-  "short_name": "Quake Kit",
-  "description": "Track the contents and expiration dates of your earthquake emergency kit.",
+  "name": "DuxPrep",
+  "short_name": "DuxPrep",
+  "description": "Track your earthquake emergency kit, expiration dates, and evacuation checklist.",
   "start_url": ".",
   "display": "standalone",
   "background_color": "#0f1115",

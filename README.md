@@ -1,14 +1,16 @@
-# Earthquake Kit Tracker
+# DuxPrep
 
 A mobile-first PWA that tracks the contents of an earthquake emergency kit —
-what's in it, when each item expires, and a monthly email digest of anything
-expired or expiring within 90 days.
+what's in it, when each item expires, a monthly email digest of anything
+expired or expiring within 90 days, plus a grab-and-go evacuation checklist.
 
 - **Frontend:** static HTML/CSS/JS, hosted on GitHub Pages
-- **Database:** Airtable (one base, one `Items` table), accessed straight from
-  the browser with a records-only personal access token
+- **Database:** Airtable (one base: `Items` + `Evacuation` tables), accessed
+  straight from the browser with a records-only personal access token
 - **Barcode scanning:** camera via [html5-qrcode], product info auto-filled
-  from Open Food Facts, falling back to UPCitemdb
+  from Open Food Facts, falling back to UPCitemdb; items without a barcode
+  match can be photographed instead (uploaded via Airtable's
+  `content.airtable.com` attachment endpoint)
 - **Alerts:** Airtable scheduled automation → monthly email digest
 
 > Note: the runtime Airtable token is served in the public page source by

@@ -6,6 +6,7 @@ export const CONFIG = {
   airtableToken: "__AIRTABLE_TOKEN__",
   baseId: "appd8hZ3F0sOhoxo7",
   tableName: "Items",
+  evacTableName: "Evacuation",
   // Items expiring within this many days count as "Expiring soon".
   // Keep in sync with the Airtable email automation's filter.
   soonDays: 90,
@@ -18,6 +19,7 @@ export const CATEGORIES = [
   { name: "Medication",        emoji: "💊" },
   { name: "Light & Power",     emoji: "🔦" },
   { name: "Tools",             emoji: "🔧" },
+  { name: "Kitchen",           emoji: "🍳" },
   { name: "Communication",     emoji: "📻" },
   { name: "Hygiene",           emoji: "🧼" },
   { name: "Documents & Cash",  emoji: "📄" },
