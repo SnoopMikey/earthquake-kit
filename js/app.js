@@ -32,7 +32,7 @@ const demoStore = {
     { name: "LED flashlight", category: "Light & Power", quantity: 2, expiration: null },
     { name: "AA batteries 12-pack", category: "Light & Power", quantity: 1, expiration: offsetDate(900) },
     { name: "Hand-crank radio", category: "Communication", quantity: 1, expiration: null },
-  ].map((it, i) => ({ id: `demo${i}`, barcode: "", notes: "", lastReplaced: null, photoUrl: null, ...it })),
+  ].map((it, i) => ({ id: `demo${i}`, barcode: "", notes: "", photoUrl: null, ...it })),
   evac: [
     "Passports & documents binder",
     "Wallet & keys",
@@ -310,7 +310,6 @@ function openDialog(item = null) {
   pendingPhoto = null;
   $("#dialogTitle").textContent = item ? "Edit item" : "Add item";
   $("#deleteBtn").hidden = !item;
-  $("#replacedBtn").hidden = !item;
   $("#lookupStatus").hidden = true;
   setPhotoPreview(item?.photoUrl || null);
   form.elements.id.value = item?.id || "";
@@ -322,10 +321,7 @@ function openDialog(item = null) {
   form.elements.barcode.value = item?.barcode || "";
   form.elements.photoUrl.value = "";
 
-  const meta = [];
-  if (item?.barcode) meta.push(`Barcode ${item.barcode}`);
-  if (item?.lastReplaced) meta.push(`Last replaced ${item.lastReplaced}`);
-  $("#metaLine").textContent = meta.join(" · ");
+  $("#metaLine").textContent = item?.barcode ? `Barcode ${item.barcode}` : "";
 
   dialog.showModal();
 }
@@ -349,12 +345,10 @@ function readForm() {
   };
 }
 
-async function saveItem(extra = {}) {
+async function saveItem() {
   const id = form.elements.id.value;
-  const item = { ...readForm(), ...extra };
+  const item = readForm();
   if (!item.name) return;
-  const existing = id ? state.items.find((x) => x.id === id) : null;
-  if (existing) item.lastReplaced = extra.lastReplaced ?? existing.lastReplaced;
   try {
     let saved;
     if (id) {
@@ -504,11 +498,6 @@ function bindEvents() {
     } catch (err) {
       toast(`Delete failed — ${err.message}`);
     }
-  });
-
-  $("#replacedBtn").addEventListener("click", () => {
-    // Mark as replaced today; the user updates the expiration date in the same form.
-    saveItem({ lastReplaced: offsetDate(0) });
   });
 
   document.querySelector(".quick-dates").addEventListener("click", (e) => {

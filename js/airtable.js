@@ -50,7 +50,6 @@ function fromItemRecord(rec) {
     expiration: f["Expiration Date"] || null, // "YYYY-MM-DD"
     barcode: f.Barcode || "",
     notes: f.Notes || "",
-    lastReplaced: f["Last Replaced"] || null,
     photoUrl: photo ? (photo.thumbnails?.large?.url || photo.url) : null,
     createdTime: rec.createdTime,
   };
@@ -64,7 +63,6 @@ function toItemFields(item) {
     "Expiration Date": item.expiration || null,
     Barcode: item.barcode || "",
     Notes: item.notes || "",
-    "Last Replaced": item.lastReplaced || null,
   };
   // Only (re)write the attachment when a new external image URL is being set;
   // otherwise leave the stored attachment untouched.
