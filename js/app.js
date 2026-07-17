@@ -4,6 +4,7 @@ import { lookupBarcode } from "./lookup.js";
 import { scannerAvailable, startScan, stopScan } from "./scanner.js";
 import { unlockAudio, beep } from "./beep.js";
 import { pickPhoto, fileToJpeg } from "./photo.js";
+import { readCache, writeCache, readQueue, writeQueue, enqueue, relTime } from "./offline.js";
 
 // ---------- state ----------
 
@@ -14,6 +15,8 @@ const state = {
   statusFilter: null,   // 'expired' | 'soon' | 'ok' | 'none' | null
   categoryFilter: null, // category name | null
   query: "",
+  offline: false,
+  syncedAt: null,       // ms timestamp of last successful Airtable pull
 };
 
 let pendingPhoto = null; // {dataUrl, base64, contentType} captured but not yet saved
@@ -101,6 +104,15 @@ const store = demo
       evacReset: airtable.resetEvac,
     };
 
+// fetch throws TypeError when the network itself is unreachable; Airtable
+// HTTP errors surface as plain Errors. This distinction drives offline UX.
+const isNetworkError = (err) => err instanceof TypeError;
+
+function persistCache() {
+  if (demo) return;
+  writeCache({ items: state.items, evacItems: state.evacItems, syncedAt: state.syncedAt });
+}
+
 // ---------- status helpers ----------
 
 function daysUntil(dateStr) {
@@ -164,6 +176,24 @@ function toast(msg) {
   el.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.hidden = true; }, 2600);
+}
+
+function updateBanner() {
+  const banner = $("#banner");
+  if (demo) {
+    banner.hidden = false;
+    banner.textContent = "Demo mode — Airtable isn’t connected yet, so changes won’t be saved.";
+    return;
+  }
+  if (state.offline) {
+    const pending = readQueue().length;
+    const synced = state.syncedAt ? `synced ${relTime(state.syncedAt)}` : "never synced";
+    banner.hidden = false;
+    banner.textContent = `📴 Offline — showing data ${synced}.` +
+      (pending ? ` ${pending} checklist change${pending > 1 ? "s" : ""} will sync when you’re back online.` : "");
+  } else {
+    banner.hidden = true;
+  }
 }
 
 // ---------- tabs ----------
@@ -234,11 +264,12 @@ function renderList() {
     .map((it) => {
       const st = statusOf(it);
       const qty = it.quantity ? `×${it.quantity} · ` : "";
+      const emoji = categoryEmoji(it.category);
       const thumb = it.photoUrl
         ? `<img src="${esc(it.photoUrl)}" alt="" loading="lazy">`
-        : categoryEmoji(it.category);
+        : emoji;
       return `<li class="item-card" data-id="${esc(it.id)}">
-        <div class="item-thumb">${thumb}</div>
+        <div class="item-thumb" data-emoji="${emoji}">${thumb}</div>
         <div class="item-body">
           <div class="item-name">${esc(it.name)}</div>
           <div class="item-sub">${qty}${esc(it.category)}</div>
@@ -287,17 +318,117 @@ function renderEvac() {
   }
 }
 
+// ---------- offline queue (evacuation checklist) ----------
+
+let flushing = false;
+
+// Replays queued checklist ops against Airtable. Network failure keeps the
+// op queued for later; a permanent error (e.g. record deleted) drops it.
+async function flushQueue() {
+  if (demo || flushing) return false;
+  flushing = true;
+  let syncedSomething = false;
+  try {
+    while (true) {
+      const q = readQueue();
+      if (!q.length) break;
+      const op = q[0];
+      try {
+        if (op.t === "add") {
+          const rec = await airtable.createEvac(op.name);
+          const local = state.evacItems.find((x) => x.id === op.tempId);
+          if (local) {
+            local.id = rec.id;
+            local.createdTime = rec.createdTime;
+          }
+          writeQueue(q.slice(1).map((o) => (o.id === op.tempId ? { ...o, id: rec.id } : o)));
+        } else if (op.t === "toggle") {
+          await airtable.updateEvac(op.id, { name: op.name, packed: op.packed });
+          writeQueue(q.slice(1));
+        } else if (op.t === "del") {
+          await airtable.deleteEvac(op.id);
+          writeQueue(q.slice(1));
+        } else {
+          writeQueue(q.slice(1));
+        }
+        syncedSomething = true;
+        state.offline = false;
+      } catch (err) {
+        if (isNetworkError(err)) {
+          state.offline = true;
+          break; // still offline — retry on the next flush
+        }
+        writeQueue(q.slice(1)); // permanent failure — drop the op
+      }
+    }
+  } finally {
+    flushing = false;
+  }
+  if (syncedSomething) persistCache();
+  updateBanner();
+  return syncedSomething;
+}
+
+// Re-applies still-queued ops on top of a fresh server pull, so pending
+// offline changes aren't visually lost mid-sync.
+function applyQueueToState() {
+  for (const op of readQueue()) {
+    if (op.t === "add" && !state.evacItems.some((x) => x.id === op.tempId)) {
+      state.evacItems.push({ id: op.tempId, name: op.name, notes: "", packed: false, createdTime: op.at || "~" });
+    } else if (op.t === "toggle") {
+      const rec = state.evacItems.find((x) => x.id === op.id);
+      if (rec) rec.packed = op.packed;
+    } else if (op.t === "del") {
+      state.evacItems = state.evacItems.filter((x) => x.id !== op.id);
+    }
+  }
+}
+
+let tempSeq = 0;
+const newTempId = () => `tmp-${Date.now()}-${tempSeq++}`;
+
 // ---------- data loading ----------
 
 async function load() {
+  if (demo) {
+    state.items = await store.list();
+    state.evacItems = await store.evacList();
+    render();
+    return;
+  }
+
+  // Render instantly from the last sync while the network round-trip runs.
+  const cached = readCache();
+  if (cached) {
+    state.items = cached.items || [];
+    state.evacItems = cached.evacItems || [];
+    state.syncedAt = cached.syncedAt || null;
+    applyQueueToState();
+    render();
+  }
+
+  await flushQueue(); // push pending changes before pulling
+
   try {
     const [items, evacItems] = await Promise.all([store.list(), store.evacList()]);
     state.items = items;
     state.evacItems = evacItems;
+    applyQueueToState();
+    state.syncedAt = Date.now();
+    state.offline = false;
+    persistCache();
     render();
   } catch (err) {
-    toast(`Couldn’t load — ${err.message}`);
+    if (isNetworkError(err)) {
+      state.offline = true;
+      if (!cached) toast("Offline, and no cached data yet — connect once to sync.");
+    } else if (!cached) {
+      toast(`Couldn’t load — ${err.message}`);
+    } else {
+      toast(`Refresh failed — ${err.message}`);
+    }
   }
+  updateBanner();
 }
 
 // ---------- add / edit dialog ----------
@@ -320,7 +451,6 @@ function openDialog(item = null) {
   form.elements.notes.value = item?.notes || "";
   form.elements.barcode.value = item?.barcode || "";
   form.elements.photoUrl.value = "";
-
   $("#metaLine").textContent = item?.barcode ? `Barcode ${item.barcode}` : "";
 
   dialog.showModal();
@@ -367,11 +497,20 @@ async function saveItem() {
       }
       pendingPhoto = null;
     }
+    state.offline = false;
+    persistCache();
+    updateBanner();
     toast(id ? "Saved" : `Added ${saved.name}`);
     dialog.close();
     render();
   } catch (err) {
-    toast(`Save failed — ${err.message}`);
+    if (isNetworkError(err)) {
+      state.offline = true;
+      updateBanner();
+      toast("You’re offline — kit changes can’t be saved right now.");
+    } else {
+      toast(`Save failed — ${err.message}`);
+    }
   }
 }
 
@@ -441,6 +580,59 @@ async function onBarcode(code) {
   }
 }
 
+// ---------- evacuation actions (queue-backed when live) ----------
+
+async function evacAdd(name) {
+  if (demo) {
+    state.evacItems.push(await store.evacCreate(name));
+  } else {
+    const tempId = newTempId();
+    const at = new Date().toISOString();
+    state.evacItems.push({ id: tempId, name, notes: "", packed: false, createdTime: at });
+    enqueue({ t: "add", tempId, name, at });
+    flushQueue();
+  }
+  persistCache();
+  renderEvac();
+}
+
+async function evacToggle(rec, packed) {
+  rec.packed = packed;
+  renderEvac();
+  if (demo) {
+    await store.evacUpdate(rec.id, { name: rec.name, packed });
+  } else {
+    enqueue({ t: "toggle", id: rec.id, name: rec.name, packed });
+    flushQueue();
+  }
+  persistCache();
+}
+
+async function evacRemove(rec) {
+  state.evacItems = state.evacItems.filter((x) => x.id !== rec.id);
+  renderEvac();
+  if (demo) {
+    await store.evacRemove(rec.id);
+  } else {
+    enqueue({ t: "del", id: rec.id });
+    flushQueue();
+  }
+  persistCache();
+}
+
+async function evacResetAll() {
+  const packedRecs = state.evacItems.filter((x) => x.packed);
+  state.evacItems.forEach((x) => { x.packed = false; });
+  renderEvac();
+  if (demo) {
+    await store.evacReset(packedRecs.map((x) => x.id));
+  } else {
+    packedRecs.forEach((rec) => enqueue({ t: "toggle", id: rec.id, name: rec.name, packed: false }));
+    flushQueue();
+  }
+  persistCache();
+}
+
 // ---------- events ----------
 
 function bindEvents() {
@@ -475,6 +667,14 @@ function bindEvents() {
     if (item) openDialog(item);
   });
 
+  // Offline (or expired attachment URL): swap a broken photo for the emoji.
+  $("#list").addEventListener("error", (e) => {
+    if (e.target.tagName !== "IMG") return;
+    const thumb = e.target.closest(".item-thumb");
+    e.target.remove();
+    if (thumb) thumb.textContent = thumb.dataset.emoji || "📦";
+  }, true);
+
   $("#fab").addEventListener("click", () => openDialog());
   $("#refreshBtn").addEventListener("click", () => { load(); toast("Refreshing…"); });
   $("#closeDialog").addEventListener("click", () => dialog.close());
@@ -492,11 +692,14 @@ function bindEvents() {
     try {
       await store.remove(id);
       state.items = state.items.filter((x) => x.id !== id);
+      persistCache();
       dialog.close();
       render();
       toast("Deleted");
     } catch (err) {
-      toast(`Delete failed — ${err.message}`);
+      toast(isNetworkError(err)
+        ? "You’re offline — kit changes can’t be saved right now."
+        : `Delete failed — ${err.message}`);
     }
   });
 
@@ -530,63 +733,39 @@ function bindEvents() {
 
   // ----- evacuation checklist -----
 
-  $("#evacAddForm").addEventListener("submit", async (e) => {
+  $("#evacAddForm").addEventListener("submit", (e) => {
     e.preventDefault();
     const input = $("#evacAddInput");
     const name = input.value.trim();
     if (!name) return;
-    try {
-      const rec = await store.evacCreate(name);
-      state.evacItems.push(rec);
-      input.value = "";
-      renderEvac();
-    } catch (err) {
-      toast(`Couldn’t add — ${err.message}`);
-    }
+    evacAdd(name);
+    input.value = "";
   });
 
-  $("#evacList").addEventListener("change", async (e) => {
+  $("#evacList").addEventListener("change", (e) => {
     const li = e.target.closest(".evac-item");
     if (!li || e.target.type !== "checkbox") return;
     const rec = state.evacItems.find((x) => x.id === li.dataset.id);
-    const packed = e.target.checked;
-    rec.packed = packed; // optimistic
-    renderEvac();
-    try {
-      await store.evacUpdate(rec.id, { name: rec.name, packed });
-    } catch (err) {
-      rec.packed = !packed;
-      renderEvac();
-      toast(`Couldn’t update — ${err.message}`);
-    }
+    if (rec) evacToggle(rec, e.target.checked);
   });
 
-  $("#evacList").addEventListener("click", async (e) => {
+  $("#evacList").addEventListener("click", (e) => {
     const del = e.target.closest(".evac-del");
     if (!del) return;
     const li = del.closest(".evac-item");
     const rec = state.evacItems.find((x) => x.id === li.dataset.id);
-    if (!confirm(`Remove “${rec?.name}” from the evacuation list?`)) return;
-    try {
-      await store.evacRemove(rec.id);
-      state.evacItems = state.evacItems.filter((x) => x.id !== rec.id);
-      renderEvac();
-    } catch (err) {
-      toast(`Couldn’t remove — ${err.message}`);
-    }
+    if (!rec) return;
+    if (!confirm(`Remove “${rec.name}” from the evacuation list?`)) return;
+    evacRemove(rec);
   });
 
-  $("#evacReset").addEventListener("click", async () => {
+  $("#evacReset").addEventListener("click", () => {
     if (!confirm("Uncheck everything on the evacuation list?")) return;
-    const packedIds = state.evacItems.filter((x) => x.packed).map((x) => x.id);
-    try {
-      await store.evacReset(packedIds);
-      state.evacItems.forEach((x) => { x.packed = false; });
-      renderEvac();
-    } catch (err) {
-      toast(`Couldn’t reset — ${err.message}`);
-    }
+    evacResetAll();
   });
+
+  // Resync automatically when connectivity returns.
+  window.addEventListener("online", () => load());
 }
 
 // ---------- init ----------
@@ -596,14 +775,16 @@ function init() {
     .map((c) => `<option value="${esc(c.name)}">${c.emoji} ${esc(c.name)}</option>`)
     .join("");
 
-  if (demo) {
-    const banner = $("#banner");
-    banner.hidden = false;
-    banner.textContent = "Demo mode — Airtable isn’t connected yet, so changes won’t be saved.";
-  }
-
+  updateBanner();
   bindEvents();
   load();
+
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  }
+
+  // Debug/testing hook (harmless in production).
+  window.__duxprep = { state, load, flushQueue, readQueue };
 }
 
 init();

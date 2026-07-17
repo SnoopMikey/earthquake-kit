@@ -12,6 +12,10 @@ expired or expiring within 90 days, plus a grab-and-go evacuation checklist.
   match can be photographed instead (uploaded via Airtable's
   `content.airtable.com` attachment endpoint)
 - **Alerts:** Airtable scheduled automation → monthly email digest
+- **Offline:** a service worker pre-caches the app shell (scanner library is
+  vendored, no CDN), the last successful sync is kept in localStorage, and
+  evacuation-checklist changes made offline are queued and replayed when
+  connectivity returns. Kit edits require a connection.
 
 > Note: the runtime Airtable token is served in the public page source by
 > design — it is scoped to read/write records on this single base only. It is

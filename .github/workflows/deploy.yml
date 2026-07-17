@@ -28,6 +28,9 @@ jobs:
           TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
         run: sed -i "s/__AIRTABLE_TOKEN__/${TOKEN}/" js/config.js
 
+      - name: Stamp service worker cache version
+        run: sed -i "s/__BUILD__/${GITHUB_SHA::12}/" sw.js
+
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
